@@ -1,52 +1,66 @@
-"""Split audio into vocal and accompaniment stems (HDemucs via torchaudio).
+"""Split audio into vocal and accompaniment stems (Mel-Band Roformer).
 
 Outputs both the voice and the backing music, so a workflow can transcribe /
 re-voice the vocals and later mix the new voice back over the accompaniment.
 With pick_best_seconds > 0 the VOCALS output is cut to the loudest vocal
 window of that length (the best clip to clone a voice from); the
 accompaniment output always keeps the full length.
+
+Mel-Band Roformer (via the `audio-separator` UVR engine) replaced HDemucs
+because HDemucs leaves a substantial ghost of the original voice in the
+instrumental (~9 dB below the mix even on clean speech), which the mix-back
+step then played under the new voice as noise. Roformer's instrumental is
+near-silent on clean speech (~-80 dB) and clean on music, so the residue
+disappears and no separate music-detection step is needed.
 """
 
+import os
+import subprocess
+import tempfile
+import uuid
+
+import numpy as np
 import torch
-import torchaudio
-from torchaudio.transforms import Fade
 
-_BUNDLE = torchaudio.pipelines.HDEMUCS_HIGH_MUSDB_PLUS
-_MODEL = None
-
-
-def _get_model():
-    global _MODEL
-    if _MODEL is None:
-        _MODEL = _BUNDLE.get_model().eval()
-    return _MODEL
+# UVR Mel-Band Roformer vocals model — auto-downloaded on first load into the
+# audio-separator model dir.
+_MODEL_FILENAME = os.environ.get(
+    "ROFORMER_MODEL", "model_mel_band_roformer_ep_3005_sdr_11.4360.ckpt"
+)
+_SEPARATOR = None
+_FFMPEG = "/usr/bin/ffmpeg"
+_SR = 44100
 
 
-def _separate_sources(model, mix, sample_rate, segment=10.0, overlap=1.0):
-    """Chunked separation with linear crossfades (torchaudio tutorial scheme)."""
-    device = mix.device
-    batch, channels, length = mix.shape
-    chunk_len = int(sample_rate * segment * (1 + overlap))
-    overlap_frames = int(overlap * sample_rate)
-    fade = Fade(fade_in_len=0, fade_out_len=overlap_frames, fade_shape="linear")
+def _get_separator():
+    global _SEPARATOR
+    if _SEPARATOR is None:
+        from audio_separator.separator import Separator
 
-    final = torch.zeros(batch, len(model.sources), channels, length, device=device)
-    start, end = 0, chunk_len
-    while start < length - overlap_frames:
-        chunk = mix[:, :, start:end]
-        with torch.no_grad():
-            out = model.forward(chunk)
-        out = fade(out)
-        final[:, :, :, start:start + out.shape[-1]] += out
-        if start == 0:
-            fade.fade_in_len = overlap_frames
-            start += chunk_len - overlap_frames
-        else:
-            start += chunk_len
-        end += chunk_len
-        if end >= length:
-            fade.fade_out_len = 0
-    return final
+        separator = Separator(output_dir=tempfile.gettempdir(), output_format="WAV")
+        separator.load_model(model_filename=_MODEL_FILENAME)
+        _SEPARATOR = separator
+    return _SEPARATOR
+
+
+def _write_wav(waveform, sample_rate, path):
+    """Write [C, T] float tensor to a wav via ffmpeg (no torch audio backend needed)."""
+    channels = waveform.shape[0]
+    raw = waveform.t().contiguous().numpy().astype(np.float32).tobytes()
+    subprocess.run(
+        [_FFMPEG, "-v", "quiet", "-y", "-f", "f32le", "-ar", str(sample_rate),
+         "-ac", str(channels), "-i", "pipe:0", path],
+        input=raw, check=True,
+    )
+
+
+def _read_wav(path):
+    """Read a wav to a [1, T] mono float tensor at _SR."""
+    raw = subprocess.run(
+        [_FFMPEG, "-v", "quiet", "-i", path, "-ac", "1", "-ar", str(_SR), "-f", "f32le", "-"],
+        capture_output=True, check=True,
+    ).stdout
+    return torch.from_numpy(np.frombuffer(bytearray(raw), dtype=np.float32).copy()).unsqueeze(0)
 
 
 def _frame_energy(mono, frame):
@@ -54,13 +68,8 @@ def _frame_energy(mono, frame):
     return (mono[:n].reshape(-1, frame) ** 2).mean(dim=1)
 
 
-def _best_window(vocals_mono, accomp_mono, sample_rate, seconds):
-    """Start index of the loudest vocal window.
-
-    (A/B tests showed picking by vocal loudness gives the cleanest clone;
-    scoring by music-bleed ratio selected breathier vocals and made the
-    generated voice hissier.)
-    """
+def _best_window(vocals_mono, sample_rate, seconds):
+    """Start index of the loudest vocal window (the cleanest clip to clone from)."""
     win = int(seconds * sample_rate)
     if win >= vocals_mono.shape[-1]:
         return 0
@@ -87,56 +96,47 @@ class AudioExtractVocals:
     RETURN_NAMES = ("vocals", "accompaniment")
     FUNCTION = "extract"
     CATEGORY = "audio"
-    DESCRIPTION = "Split into vocal and backing-music stems (HDemucs)."
+    DESCRIPTION = "Split into vocal and backing-music stems (Mel-Band Roformer)."
 
     def extract(self, audio, pick_best_seconds):
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        sr = _BUNDLE.sample_rate  # 44100
-
         wav = audio["waveform"][0].float()  # [C, T]
-        if int(audio["sample_rate"]) != sr:
-            wav = torchaudio.functional.resample(wav, int(audio["sample_rate"]), sr)
-        if wav.shape[0] == 1:
-            wav = wav.repeat(2, 1)
-        elif wav.shape[0] > 2:
-            wav = wav[:2]
+        sample_rate = int(audio["sample_rate"])
 
-        model = _get_model().to(device)
+        tmp_dir = tempfile.gettempdir()
+        tag = uuid.uuid4().hex
+        in_path = os.path.join(tmp_dir, f"sep-in-{tag}.wav")
+        produced = []
+
         try:
-            wav = wav.to(device)
-            ref = wav.mean(0)
-            mean, std = ref.mean(), ref.std() + 1e-8
-            sources = _separate_sources(model, ((wav - mean) / std)[None], sr)[0]
-            vocal_idx = model.sources.index("vocals")
-            vocals = sources[vocal_idx] * std + mean
-            accompaniment = (sources.sum(dim=0) - sources[vocal_idx]) * std + mean
+            _write_wav(wav, sample_rate, in_path)
+
+            separator = _get_separator()
+            # returns the two stem filenames (relative to the separator's out dir)
+            outputs = separator.separate(in_path)
+            produced = [os.path.join(tmp_dir, name) for name in outputs]
+
+            def _find(kind):
+                match = next((p for p in produced if kind in os.path.basename(p).lower()), None)
+                if not match:
+                    raise RuntimeError(f"Roformer produced no {kind} stem: {outputs}")
+                return match
+
+            vocals = _read_wav(_find("vocal"))
+            accompaniment = _read_wav(_find("instrument"))
         finally:
-            model.to("cpu")
-            if device == "cuda":
-                torch.cuda.empty_cache()
-
-        vocals, accompaniment = vocals.cpu(), accompaniment.cpu()
-
-        # No real music? Bypass: keep the ORIGINAL audio untouched (separation
-        # artifacts add noise to clean speech) and output true silence as the
-        # accompaniment.
-        voc_db = 10 * torch.log10((vocals ** 2).mean() + 1e-12)
-        acc_db = 10 * torch.log10((accompaniment ** 2).mean() + 1e-12)
-        if acc_db < -55.0 or acc_db - voc_db < -25.0:
-            import logging
-            logging.getLogger(__name__).info(
-                f"[ExtractVocals] no significant music (accomp {acc_db:.1f} dB, vocals {voc_db:.1f} dB) — bypassing separation"
-            )
-            vocals = wav.cpu()
-            accompaniment = torch.zeros_like(vocals)
+            for path in [in_path, *produced]:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
 
         if pick_best_seconds > 0:
-            start = _best_window(vocals.mean(0), accompaniment.mean(0), sr, pick_best_seconds)
-            vocals = vocals[:, start:start + int(pick_best_seconds * sr)]
+            start = _best_window(vocals[0], _SR, pick_best_seconds)
+            vocals = vocals[:, start:start + int(pick_best_seconds * _SR)]
 
         return (
-            {"waveform": vocals.unsqueeze(0), "sample_rate": sr},
-            {"waveform": accompaniment.unsqueeze(0), "sample_rate": sr},
+            {"waveform": vocals.unsqueeze(0), "sample_rate": _SR},
+            {"waveform": accompaniment.unsqueeze(0), "sample_rate": _SR},
         )
 
 

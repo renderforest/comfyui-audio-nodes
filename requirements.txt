@@ -1,0 +1,11 @@
+# Extra deps the fleet ComfyUI needs for the speech-to-speech custom nodes,
+# on top of a stock ComfyUI + OmniVoice install. Install into the ComfyUI venv:
+#   pip install -r requirements.txt
+#
+# audio-separator provides the Mel-Band Roformer vocal separation used by
+# audio_extract_vocals.py (far cleaner instrumental than HDemucs — no ghost
+# voice left in the backing track). The Roformer model
+# (model_mel_band_roformer_ep_3005_sdr_11.4360.ckpt) auto-downloads on first
+# run into the audio-separator model dir.
+audio-separator[gpu]
+audioread

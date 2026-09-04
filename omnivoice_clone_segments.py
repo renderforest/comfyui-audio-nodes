@@ -149,6 +149,12 @@ class OmniVoiceCloneSegments:
             sr = int(out["sample_rate"])
 
             span = max(0.2, seg["end"] - seg["start"])
+            # OmniVoice occasionally returns an empty (0.00s) clip for an odd
+            # phrase (a non-lexical vocalization, a stray token). Skip it rather
+            # than crash the whole track — the slot just stays silent.
+            if wav.shape[-1] < int(0.02 * sr):
+                logger.warning(f"[CloneSegments] {i + 1}/{len(segs)} empty generation, skipping '{seg['text'][:50]}'")
+                continue
             gen_dur = wav.shape[-1] / sr
             factor = min(max(gen_dur / span, 0.5), 2.5)
             if abs(gen_dur / span - 1.0) > 0.03:
