@@ -1,0 +1,24 @@
+# seed-vc (zero-shot voice conversion) runs in its OWN venv, separate from the
+# ComfyUI venv — its deps (numpy<2, pinned huggingface_hub/transformers) conflict
+# with ComfyUI + audio-separator. The SeedVCConvert node calls it as a subprocess
+# at $SEEDVC_PYTHON (default /workspace/seedvc-venv/bin/python).
+#
+# Per-box setup:
+#
+#   python3 -m venv /workspace/seedvc-venv
+#   /workspace/seedvc-venv/bin/pip install seed-vc torchcodec
+#
+#   # seed-vc's bundled BigVGAN loader requires two kwargs the installed
+#   # huggingface_hub no longer passes; make them optional (one-line patch):
+#   F=/workspace/seedvc-venv/lib/python3.13/site-packages/seed_vc/modules/bigvgan/bigvgan.py
+#   sed -i 's/            proxies: Optional\[Dict\],/            proxies: Optional[Dict] = None,/' "$F"
+#   sed -i 's/            resume_download: bool,/            resume_download: bool = None,/' "$F"
+#
+# First conversion auto-downloads the seed-vc + BigVGAN models from HuggingFace.
+# Conversion runs ~0.13x realtime on an RTX 3080 Ti.
+#
+# The ComfyUI venv itself only needs the AudioExtractVocals dep (see
+# requirements.txt: audio-separator[gpu], audioread). seed-vc is NOT installed
+# into the ComfyUI venv.
+seed-vc
+torchcodec
