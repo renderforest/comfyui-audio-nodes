@@ -51,9 +51,12 @@ class SeedVCConvert:
                 "source": ("AUDIO", {"tooltip": "The audio to re-voice (content / vocals)."}),
                 "reference": ("AUDIO", {"tooltip": "The target voice to convert into."}),
                 "diffusion_steps": ("INT", {"default": 25, "min": 1, "max": 100}),
-                # f0 conditioning keeps pitch/melody — needed for singing, safe
-                # for speech; auto-f0 fits the source pitch to the target range.
-                "f0_condition": ("BOOLEAN", {"default": True}),
+                # The base model (f0_condition False) matches the target TIMBRE
+                # markedly better (speaker-embedding cosine ~0.85 vs ~0.79 for
+                # the f0 singing model) while still covering the full duration,
+                # so it is the default. Enable f0_condition only when strict
+                # pitch/melody preservation matters more than voice identity.
+                "f0_condition": ("BOOLEAN", {"default": False}),
                 "auto_f0_adjust": ("BOOLEAN", {"default": True}),
             },
         }
