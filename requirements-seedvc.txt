@@ -15,7 +15,17 @@
 #   sed -i 's/            resume_download: bool,/            resume_download: bool = None,/' "$F"
 #
 # First conversion auto-downloads the seed-vc + BigVGAN models from HuggingFace.
-# Conversion runs ~0.13x realtime on an RTX 3080 Ti.
+#
+# PERSISTENT SERVER (required for speed): the SeedVCConvert node calls a warm
+# server so models load ONCE instead of ~15s per job. Run seedvc_server.py in
+# this venv as a long-lived service (systemd/supervisor in production):
+#
+#   /workspace/seedvc-venv/bin/python /workspace/comfyui/ComfyUI/custom_nodes/seedvc_server.py
+#   # listens on 127.0.0.1:8199 (SEEDVC_PORT / SEEDVC_SERVER to change)
+#
+# If the server is down the node falls back to the (slow) subprocess path, so
+# it still works — just without the speedup.
+# With the warm server + batched Roformer, a 30s clip converts in ~6s.
 #
 # The ComfyUI venv itself only needs the AudioExtractVocals dep (see
 # requirements.txt: audio-separator[gpu], audioread). seed-vc is NOT installed
