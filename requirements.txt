@@ -8,10 +8,14 @@
 # (model_mel_band_roformer_ep_3005_sdr_11.4360.ckpt) auto-downloads on first
 # run into the audio-separator model dir.
 #
-# Cap: audio-separator >=0.46 requires torch>=2.13, but torchaudio (which
-# omnivoice hard-requires at import) ended at 2.11.0 and only works with
-# torch 2.11. Letting pip pick a newer audio-separator drags torch forward,
-# torchaudio disappears, and the OmniVoice TTS nodes silently stop
-# registering. 0.36+ keeps numpy>=2 (matches ComfyUI).
-audio-separator[gpu]>=0.36,<0.46
+# audio-separator >=0.46: audio_extract_vocals.py passes use_native_fp16,
+# which older releases reject. Do NOT install seed-vc into the same venv —
+# it pins numpy<2 and pip would silently downgrade audio-separator to satisfy
+# it (see requirements-seedvc.txt).
+#
+# torchaudio: imported by audio_overlay_voice.py (and by omnivoice). Nothing
+# else pulls it in; its final release (2.11.0) is forward-compatible with
+# newer torch, so it is left unpinned.
+audio-separator[gpu]>=0.46
 audioread
+torchaudio
