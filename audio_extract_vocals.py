@@ -39,7 +39,8 @@ def _get_separator():
 
         # Batched GPU inference (segment_size 512, batch_size 4) roughly halves
         # separation time vs the defaults on the RTX 3080 Ti (~2.6s vs ~5s for
-        # 30s) with no quality change.
+        # 30s) with no quality change. use_native_fp16 needs audio-separator
+        # >=0.46 (see requirements.txt).
         separator = Separator(
             output_dir=tempfile.gettempdir(), output_format="WAV", use_native_fp16=True,
             mdxc_params={"segment_size": 512, "batch_size": 4, "overlap": 2},
