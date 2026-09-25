@@ -39,9 +39,12 @@ def _get_separator():
 
         # Batched GPU inference (segment_size 512, batch_size 4) roughly halves
         # separation time vs the defaults on the RTX 3080 Ti (~2.6s vs ~5s for
-        # 30s) with no quality change.
+        # 30s) with no quality change. Mixed precision via use_autocast: it
+        # exists in every audio-separator the fleet can run (<=0.45, the last
+        # release compatible with torch 2.11 / torchaudio — see
+        # requirements.txt), unlike use_native_fp16 (0.46+ only).
         separator = Separator(
-            output_dir=tempfile.gettempdir(), output_format="WAV", use_native_fp16=True,
+            output_dir=tempfile.gettempdir(), output_format="WAV", use_autocast=True,
             mdxc_params={"segment_size": 512, "batch_size": 4, "overlap": 2},
         )
         separator.load_model(model_filename=_MODEL_FILENAME)

@@ -7,5 +7,11 @@
 # voice left in the backing track). The Roformer model
 # (model_mel_band_roformer_ep_3005_sdr_11.4360.ckpt) auto-downloads on first
 # run into the audio-separator model dir.
-audio-separator[gpu]
+#
+# Cap: audio-separator >=0.46 requires torch>=2.13, but torchaudio (which
+# omnivoice hard-requires at import) ended at 2.11.0 and only works with
+# torch 2.11. Letting pip pick a newer audio-separator drags torch forward,
+# torchaudio disappears, and the OmniVoice TTS nodes silently stop
+# registering. 0.36+ keeps numpy>=2 (matches ComfyUI).
+audio-separator[gpu]>=0.36,<0.46
 audioread
